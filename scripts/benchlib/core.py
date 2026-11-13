@@ -57,8 +57,8 @@ class Settings:
     root: Path
     live: bool = False
     max_steps: int = 30
-    max_calls: int = 600
-    max_tokens: int = 8000
+    max_calls: int | None = None
+    max_tokens: int | None = None
     timeout: float = 180
     network_retries: int = 12
     retry_initial_s: float = 5
@@ -73,6 +73,16 @@ class Settings:
 
     def __post_init__(self):
         self.root = Path(self.root).resolve()
+        for name in ["max_steps", "max_calls", "max_tokens"]:
+            if name != "max_steps" and getattr(self, name) is None:
+                continue
+            if type(getattr(self, name)) is not int or getattr(self, name) <= 0:
+                raise ValueError(f"{name} must be a positive integer")
+        if self.timeout <= 0:
+            raise ValueError("timeout must be positive")
+        for parameters in (self.model_parameters or {}).values():
+            if set(parameters) & {"model", "messages", "tools", "max_tokens", "max_completion_tokens", "stream", "n"}:
+                raise ValueError("model_parameters cannot override model, history, tools or output limits")
         if self.guard_policy not in {"generic_only", "pseudonymize_affine"}:
             raise ValueError("Unknown privacy policy")
         if self.network_retries < 0 or not 0 <= self.retry_initial_s <= self.retry_max_s <= 60:

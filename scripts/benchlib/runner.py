@@ -117,10 +117,11 @@ class Benchmark:
                         break
                     trace.event("step_start", step=state["step"])
                     payload = {"model": model, "messages": state["messages"], "tools": toolset,
-                               "max_tokens": self.settings.max_tokens,
+                               **({"max_tokens": self.settings.max_tokens} if self.settings.max_tokens is not None else {}),
                                **(self.settings.model_parameters or {}).get(model, {})}
                     response = self.client.complete(payload, "small", trace, cache_context)
-                    choice = response["choices"][0]
+                    from .inference import validate_response
+                    choice = validate_response(response)
                     raw = choice["message"]
                     message = {k: v for k, v in raw.items() if k in
                                {"role", "content", "tool_calls", "reasoning", "reasoning_details"} and v is not None}
@@ -143,6 +144,14 @@ class Benchmark:
                         name = call["function"]["name"]
                         try:
                             args = json.loads(call["function"]["arguments"])
+                            import jsonschema
+                            selected = next((t for t in toolset if t["function"]["name"] == name), None)
+                            if selected is None:
+                                raise ValueError("Unknown or unavailable tool")
+                            try:
+                                jsonschema.validate(args, selected["function"]["parameters"])
+                            except jsonschema.ValidationError as exc:
+                                raise ValueError("Invalid tool arguments: "+exc.message) from None
                             if name == "ask_advisor":
                                 result = self.advice(mode, args, case, folder, trace, cache_context, call["id"])
                             elif name in {t["function"]["name"] for t in TOOLS}:
@@ -196,8 +205,10 @@ class Benchmark:
         payload = {"model": self.settings.advisor_model,
                    "messages": [{"role": "system", "content": "Provide concise practical advice. You have no access to files or other conversations. "+guard.get("advisor_instruction", "")},
                                 {"role": "user", "content": guard["question"]}],
-                   "max_tokens": min(3000, self.settings.max_tokens)}
+                   **({"max_tokens": self.settings.max_tokens} if self.settings.max_tokens is not None else {})}
         response = self.client.complete(payload, "advisor", trace, cache_context)
+        from .inference import validate_response
+        validate_response(response)
         text = response["choices"][0]["message"].get("content", "") or ""
         if guard.get("vault_id"):
             from .privacy import restore_advice

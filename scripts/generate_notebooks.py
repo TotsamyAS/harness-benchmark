@@ -66,12 +66,12 @@ SELECTED_CASES = ["BENCH-01"]   # None — все 17
 SELECTED_MODELS = MODELS[:1]   # MODELS — все четыре в согласованном порядке
 SELECTED_MODES = MODES
 REPETITIONS = 1
-MAX_API_CALLS = 600
+MAX_API_CALLS = None  # no application call limit
 NETWORK_RETRIES = 12
 RETRY_AMBIGUOUS = False  # включать только после проверки возможного списания
 GUARD_POLICY = "pseudonymize_affine"
 settings = Settings(ROOT, live=LIVE, force_refresh=FORCE_REFRESH,
-                    max_steps=30, max_tokens=8000, max_calls=MAX_API_CALLS,
+                    max_steps=30, max_tokens=None, max_calls=MAX_API_CALLS,
                     network_retries=NETWORK_RETRIES, retry_initial_s=5, retry_max_s=30,
                     retry_ambiguous=RETRY_AMBIGUOUS, guard_policy=GUARD_POLICY)
 bench = Benchmark(settings)

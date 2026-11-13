@@ -163,7 +163,8 @@ def test_notebooks_valid_and_root_only():
         assert nb.metadata.kernelspec.name == "harness-benchmark"
         for cell in nb.cells:
             if cell.cell_type == "code":
-                compile(cell.source, name, "exec")
+                from IPython.core.interactiveshell import InteractiveShell
+                compile(InteractiveShell.instance().transform_cell(cell.source), name, "exec")
 
 
 def test_resume_preserves_completed_runs_and_rejects_changed_inputs(tmp_path):

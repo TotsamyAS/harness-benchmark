@@ -11,6 +11,9 @@ def validate(root: Path):
     scratch.mkdir(exist_ok=True)
     os.environ["JUPYTER_PATH"] = str(root / ".venv/share/jupyter")
     first = nbformat.read(root / "01_run_benchmark.ipynb", as_version=4)
+    for cell in first.cells:
+        if cell.cell_type == "code" and "%pip install" in cell.source:
+            cell.source = "pass  # Dependencies already installed; skip network installation in offline validation"
     NotebookClient(first, timeout=120, kernel_name="harness-benchmark", resources={"metadata": {"path": str(root)}}).execute()
     nbformat.write(first, scratch / "01_run_benchmark.executed.ipynb")
     second = nbformat.read(root / "02_analysis.ipynb", as_version=4)

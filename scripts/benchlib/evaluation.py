@@ -64,7 +64,7 @@ def judge_run(client: RouterClient, folder: Path):
     case = read_json(case_dir / "case.json")
     fingerprint = run_fingerprint(root, folder)
     judge_signature = digest({"prompt": JUDGE, "schema": Verdict.model_json_schema(),
-                              "model": client.settings.judge_model, "max_tokens": 5000})
+                              "model": client.settings.judge_model, "max_tokens": client.settings.max_tokens})
     saved_verdict = folder / "evaluation/verdict.json"
     if saved_verdict.exists() and not client.settings.force_refresh:
         saved = read_json(saved_verdict)
@@ -75,14 +75,20 @@ def judge_run(client: RouterClient, folder: Path):
     history = events(folder)
     # Full observable behavior is included; never silently truncate evidence.
     evidence = {"case": case, "inputs": extract_files(case_dir / "input"),
-                "outputs": extract_files(folder / "files"), "result": result,
-                "trace": history, "trace_complete": bool(history and history[-1]["event"] == "run_end")}
-    payload = {"model": client.settings.judge_model, "max_tokens": 5000,
+                "outputs": extract_files(folder / "files"), "final_answer": result["final"],
+                "status": result["status"],
+                "advisor_requests": [{"event_id": e["event_id"], "role": "advisor", "request": e["request"]}
+                                     for e in history if e["event"] == "llm_request" and e.get("role") == "advisor"],
+                "trace_complete": bool(history and history[-1]["event"] == "run_end")}
+    payload = {"model": client.settings.judge_model,
+               **({"max_tokens": client.settings.max_tokens} if client.settings.max_tokens is not None else {}),
                "messages": [{"role": "system", "content": JUDGE},
                             {"role": "user", "content": canonical({"schema": Verdict.model_json_schema(), "evidence": evidence})}],
                "response_format": {"type": "json_object"}}
     response = client.complete(payload, "judge", trace)
     try:
+        from .inference import validate_response
+        validate_response(response)
         verdict = Verdict.model_validate_json(response["choices"][0]["message"]["content"])
         record = {"fingerprint": fingerprint, "judge_model": client.settings.judge_model,
                   "judge_signature": judge_signature,

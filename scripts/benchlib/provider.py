@@ -79,8 +79,12 @@ class RouterClient:
         if not self.settings.live:
             trace.event("llm_blocked", role=role, parent_id=request_id, reason="offline_cache_miss")
             raise RuntimeError("Offline cache miss. Enable live=True explicitly to call models")
+        from .inference import validate_request
+        if self.transport is None:
+            checks = validate_request(payload, self.settings.root)
+            trace.event("request_preflight", role=role, checks=checks)
         for attempt in range(self.settings.network_retries+1):
-            if self.live_calls >= self.settings.max_calls:
+            if self.settings.max_calls is not None and self.live_calls >= self.settings.max_calls:
                 raise RequestPaused("Session API call limit reached; checkpoint retained")
             self.live_calls += 1
             write_json(pending, {"request_hash": key, "attempt": attempt, "role": role})

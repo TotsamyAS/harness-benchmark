@@ -6,6 +6,7 @@ from pathlib import Path
 from .core import inventory, read_json, write_json
 from .documents import write_document
 from .prompts import TASKS, POLICY
+from .corpus_scale import expand_payload, text_size
 
 SUPPLIER = "ООО Синтетик-Восток"
 CHINESE = "合成东辰零部件有限公司"
@@ -27,9 +28,16 @@ def generate(root: Path):
         (folder / "output").mkdir(exist_ok=True)
         if any(inp.iterdir()):
             raise RuntimeError(f"{case_id}: inputs exist without a manifest; refusing overwrite")
+        sizes = {}
         for name, data in files.items():
-            write_document(inp / name, data)
-        write_json(manifest, {"id": case_id, "corpus_version": "synthetic-starter-v1",
+            expanded = expand_payload(number, name, data)
+            sizes[name] = {"before_chars": text_size(data), "after_chars": text_size(expanded)}
+            if text_size(expanded) < 10*text_size(data):
+                raise ValueError(f"Insufficient corpus growth: {case_id}/{name}")
+            write_document(inp / name, expanded)
+        criteria = criteria + ["Обработаны дополнительные записи и приложения; выводы привязаны к области действия документа, справочные сведения не подменяют основные условия"]
+        write_json(manifest, {"id": case_id, "corpus_version": "synthetic-expanded-v2",
+                   "content_sizes": sizes,
                    "synthetic": True, "instruction": TASKS[number], "criteria": criteria,
                    "semantic_sensitive": number in {2, 12, 13},
                    "expected_extensions": output_type or [".xlsx"],
