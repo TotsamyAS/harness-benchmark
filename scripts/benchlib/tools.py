@@ -100,10 +100,20 @@ class FileTools:
         self.force_refresh = force_refresh
 
     def path(self, value, write=False):
+        value = value.replace("\\", "/")
+        if value.startswith("./"):
+            value = value[2:]
         if value.startswith("input/") and not write:
             return safe_path(self.input, value[6:])
         if value.startswith("output/"):
             return safe_path(self.output, value[7:])
+        if not write:
+            candidates = [safe_path(root, value) for root in [self.input, self.output]]
+            found = [p for p in candidates if p.is_file()]
+            if len(found) == 1:
+                return found[0]
+            if len(found) > 1:
+                raise ValueError("Ambiguous filename: specify input/ or output/")
         raise ValueError("Use input/ for reading or output/ for writing")
 
     def execute(self, name: str, args: dict):
@@ -146,7 +156,8 @@ class FileTools:
                 sheet = book[args["sheet"]]
                 first, count = args["start_row"], min(args["count"], 50)
                 result = {"rows": list(sheet.iter_rows(min_row=first, max_row=min(first+count-1, sheet.max_row), values_only=True)),
-                          "start_row": first, "next_row": first+count if first+count <= sheet.max_row else None}
+                          "start_row": first, "total_rows": sheet.max_row, "total_columns": sheet.max_column,
+                          "next_row": first+count if first+count <= sheet.max_row else None}
                 book.close()
             elif name == "write_rows":
                 from openpyxl import load_workbook, Workbook

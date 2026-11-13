@@ -69,3 +69,11 @@ def test_word_pptx_native_objects_and_missing_format_payload(tmp_path):
         assert 'Текст' in str(read_document(tmp_path/'files'/path))
     error=tools.execute('write_file',{'path':'output/a.xlsx','data':{'text':'not a table'}})
     assert 'data.sheets' in error['message']
+
+
+def test_unambiguous_bare_filename_and_ambiguity(tmp_path):
+    inp=tmp_path/'input';inp.mkdir();(inp/'meeting.txt').write_text('source')
+    tools=FileTools(inp,tmp_path/'files',tmp_path/'cache',Trace(tmp_path/'trace',{}))
+    assert 'error' not in tools.execute('read_file',{'path':'meeting.txt'})
+    (tmp_path/'files/meeting.txt').write_text('result')
+    assert 'Ambiguous' in tools.execute('read_file',{'path':'meeting.txt'})['message']

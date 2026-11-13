@@ -114,7 +114,7 @@ def test_end_to_end_guard_judge_excel_and_approval_gate(tmp_path):
     generate(tmp_path)
     bench = Benchmark(Settings(tmp_path, live=True), fake_agent)
     result = bench.run("BENCH-04", MODELS[0], "protected", "test")
-    assert result["status"] == "completed"
+    assert result["status"] == "needs_review"  # mock did not process the source inventory
     folder = tmp_path / result["folder"]
     transmitted = [e for e in events(folder) if e["event"] == "llm_request" and e["role"] == "advisor"]
     transmitted_text = json.dumps(transmitted, ensure_ascii=False)
@@ -150,7 +150,7 @@ def test_local_has_no_advisor_and_input_change_blocks(tmp_path):
         return response({"content": "Не удалось выполнить"})
     bench = Benchmark(Settings(tmp_path, live=True), transport)
     result = bench.run("BENCH-01", MODELS[0], "local", "local-test")
-    assert result["status"] == "completed"
+    assert result["status"] == "needs_review"
     assert "ask_advisor" not in [t["function"]["name"] for t in captured[0]["tools"]]
     case_dir = tmp_path / "bemnchmark/BENCH-01"
     (case_dir / "input/new.txt").write_text("new")

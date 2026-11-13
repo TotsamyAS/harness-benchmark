@@ -11,6 +11,7 @@ from .core import MODES, MODELS, Settings, Trace, canonical, digest, environment
 from .privacy import prepare_advice
 from .provider import RouterClient
 from .tools import ADVICE_TOOL, TOOLS, FileTools
+from .coverage import COVERAGE_TOOLS, initialize, assignment, submit, report, pending
 
 from .prompts import SYSTEM
 
@@ -18,6 +19,15 @@ from .prompts import SYSTEM
 
 def load_cases(root: Path):
     return [read_json(p) for p in sorted((root / "bemnchmark").glob("BENCH-*/case.json"))]
+
+
+def reuse_configuration(config):
+    """Behavioral inputs, not unrelated source-file hashes or transport settings."""
+    return {k:config.get(k) for k in ['system','parameters','advisor','policy','max_tokens']}
+
+
+def checkpoint_configuration(config):
+    return {k:v for k,v in config.items() if k not in {'implementation','environment'}}
 
 
 def preflight(settings: Settings):
@@ -47,12 +57,13 @@ class Benchmark:
     def configuration(self):
         return {"max_steps": self.settings.max_steps, "max_tokens": self.settings.max_tokens,
                 "parameters": self.settings.model_parameters, "advisor": self.settings.advisor_model,
-                "policy": self.settings.guard_policy, "system": SYSTEM, "tools": TOOLS+[ADVICE_TOOL],
+                "policy": self.settings.guard_policy, "system": SYSTEM, "tools": TOOLS+COVERAGE_TOOLS+[ADVICE_TOOL],
                 "implementation": {p.name: digest(p.read_text(encoding="utf-8"))
                                    for p in sorted(Path(__file__).parent.glob("*.py"))},
                 "environment": environment()}
 
     def run(self, case_id, model, mode, batch_id, repetition=0):
+        self.client.live_calls = 0  # Optional call cap is per task attempt, never whole matrix.
         from . import checkpoint
         from .provider import RequestPaused
         if model not in MODELS or mode not in MODES:
@@ -64,7 +75,7 @@ class Benchmark:
         if inventory(case_dir / "input") != case["input_hashes"]:
             raise RuntimeError("Input fingerprint changed; review manifest first")
         config = self.configuration()
-        signature = digest({"case": case, "configuration": config})
+        signature = digest({"case": case, "configuration": checkpoint_configuration(config)})
         parent = case_dir / "output" / model.replace("/", "__") / mode
         blob_dir = self.settings.root / "bemnchmark/_cache/checkpoint_blobs"
         state, folder = None, None
@@ -72,8 +83,14 @@ class Benchmark:
             for candidate in sorted(parent.glob("*/checkpoint.json"), reverse=True):
                 saved = checkpoint.load(candidate.parent)
                 ctx = saved["context"]
+                compatible = saved["signature"] == signature
+                previous_result = candidate.parent / "result.json"
+                if not compatible and previous_result.exists():
+                    previous_record = read_json(previous_result)
+                    compatible = (previous_record.get("case_hash") == digest(case)
+                                  and checkpoint_configuration(previous_record.get("configuration",{})) == checkpoint_configuration(config))
                 if (ctx["batch_id"] == batch_id and ctx["repetition"] == repetition
-                    and saved["signature"] == signature
+                    and compatible
                     and (saved["phase"] != "done" or not (candidate.parent / "result.json").exists())):
                     state, folder = saved, candidate.parent
                     checkpoint.restore(folder, state, blob_dir)
@@ -100,7 +117,14 @@ class Benchmark:
                     guard_policy=self.settings.guard_policy, checkpoint_signature=signature)
         tools = FileTools(case_dir / "input", folder / "files", self.settings.root / "bemnchmark/_cache/tools",
                           trace, self.settings.force_refresh)
-        toolset = TOOLS + ([] if mode == "local" else [ADVICE_TOOL])
+        toolset = TOOLS + COVERAGE_TOOLS + ([] if mode == "local" else [ADVICE_TOOL])
+        if "coverage" not in state:
+            try:
+                state["coverage"] = initialize(case, case_dir / "input")
+            except Exception as exc:
+                state["coverage"] = {"units":[],"done":{},"profile":{},"failures":{},"version":1}
+                state["coverage_init_error"] = type(exc).__name__+": "+str(exc)
+            state["messages"].append({"role":"user","content":canonical(assignment(state["coverage"]))})
         cache_context = {"case_hash": digest(case), "input_hashes": case["input_hashes"]}
         def persist():
             checkpoint.save(folder, state, blob_dir)
@@ -109,6 +133,8 @@ class Benchmark:
         if state["phase"] != "done":
             state["status"] = "running"
         try:
+            if state.get("coverage_init_error"):
+                raise ValueError("Cannot inventory source documents: "+state["coverage_init_error"])
             while state["phase"] != "done":
                 if state["phase"] == "model":
                     if state["step"] >= self.settings.max_steps:
@@ -132,6 +158,9 @@ class Benchmark:
                     if not state["pending_calls"]:
                         state.update(final=raw.get("content") or "", phase="done",
                                      status="completed" if choice.get("finish_reason") == "stop" else "incomplete_generation")
+                        if report(state["coverage"])["missing_ids"]:
+                            state["status"] = "needs_review"
+                            trace.event("source_coverage_incomplete", **report(state["coverage"]))
                     else:
                         state["phase"] = "tools"
                     persist()  # Response is durable before any tool is executed.
@@ -154,6 +183,15 @@ class Benchmark:
                                 raise ValueError("Invalid tool arguments: "+exc.message) from None
                             if name == "ask_advisor":
                                 result = self.advice(mode, args, case, folder, trace, cache_context, call["id"])
+                            elif name == "next_work":
+                                result = assignment(state["coverage"])
+                            elif name == "coverage_results":
+                                values=list(state["coverage"]["done"].values());offset=args["offset"]
+                                result={"records":values[offset:offset+20],"next_offset":offset+20 if offset+20<len(values) else None}
+                            elif name == "submit_work":
+                                result=submit(state["coverage"],args["records"],case,case_dir/"input",folder/"files")
+                                write_json(folder/"coverage.json",report(state["coverage"]))
+                                trace.event("source_batch_committed",accepted=result["accepted"],remaining=result["remaining"])
                             elif name in {t["function"]["name"] for t in TOOLS}:
                                 result = tools.execute(name, args)
                             else:
@@ -161,21 +199,34 @@ class Benchmark:
                         except (ValueError, KeyError, TypeError) as exc:
                             result = {"error": type(exc).__name__, "message": str(exc)}
                             trace.event("tool_argument_error", tool_call_id=call["id"], result=result)
+                        if name == "submit_work" and "error" in result:
+                            from .coverage import batch_failed
+                            batch_failed(state["coverage"])
+                            result["next"]=assignment(state["coverage"])
                         trace.event("tool_result", step=state["step"], tool_call_id=call["id"], tool=name, result=result)
                         state["messages"].append({"role": "tool", "tool_call_id": call["id"], "content": canonical(result)})
                         failure_key = digest({"tool": name, "arguments": call["function"]["arguments"]})
                         failures = state.setdefault("tool_failures", {})
                         if "error" in result:
+                            if state.get("last_tool_failure") != failure_key:
+                                failures.clear()
                             failures[failure_key] = failures.get(failure_key, 0)+1
+                            state["last_tool_failure"] = failure_key
                         else:
-                            failures.pop(failure_key, None)
+                            failures.clear()
+                            state["last_tool_failure"] = None
                         state["tool_index"] += 1
                         state["tool_in_progress"] = False
                         persist()
-                        if failures.get(failure_key, 0) >= 3:
+                        if failures.get(failure_key, 0) >= 3 and name != "submit_work":
                             raise RequestPaused("Repeated identical tool failure; checkpoint retained. Fix tool arguments before continuing")
                     state["step"] += 1
                     state["phase"] = "model"
+                    processed=len(state["coverage"]["done"])
+                    if processed != state.get("coverage_context_count",0):
+                        state["coverage_context_count"]=processed
+                        state["messages"]=[state["messages"][0],state["messages"][1],
+                            {"role":"user","content":canonical(assignment(state["coverage"]))}]
                     persist()
         except KeyboardInterrupt:
             state["status"] = "paused"
@@ -186,6 +237,20 @@ class Benchmark:
             trace.event("run_paused" if isinstance(exc, RequestPaused) else "run_error",
                         error_type=type(exc).__name__, message=str(exc), checkpoint_retained=True)
         finally:
+            write_json(folder / "coverage.json",report(state["coverage"]))
+            if state["status"] == "completed":
+                from .coverage import verify_translation
+                translation_issues=verify_translation(state["coverage"],case_dir/"input",folder/"files")
+                if translation_issues:
+                    state["status"]="needs_review"
+                    write_json(folder/"translation_integrity.json",translation_issues)
+            if state["status"] == "completed":
+                from .completeness import inspect_outputs
+                checks = inspect_outputs(case, folder)
+                write_json(folder / "completeness.json", checks)
+                if not checks["passed"]:
+                    state["status"] = "needs_review"
+                    trace.event("completion_check_failed", issues=checks["issues"])
             # If a tool was interrupted, retain its PRE-operation snapshot; do not snapshot partial writes.
             state["duration_s"] += time.perf_counter()-started
             if not state["tool_in_progress"]:
@@ -236,8 +301,8 @@ class Benchmark:
                     for repetition in range(repetitions):
                         previous = next((r for r in existing if r["case_id"] == case["id"] and r["model"] == model
                                          and r["mode"] == mode and r["repetition"] == repetition
-                                         and r["status"] == "completed" and r.get("case_hash") == digest(case)
-                                         and r.get("configuration") == self.configuration()), None)
+                                         and r["status"] in {"completed", "needs_review", "step_limit"} and r.get("case_hash") == digest(case)
+                                         and reuse_configuration(r.get("configuration",{})) == reuse_configuration(self.configuration())), None)
                         if previous and not self.settings.force_refresh:
                             old_folder = self.settings.root / previous["folder"]
                             if (inventory(old_folder / "files") == previous["artifacts"]

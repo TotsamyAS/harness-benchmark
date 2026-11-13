@@ -92,7 +92,7 @@ def test_resume_within_multi_tool_reply_does_not_repeat_paid_calls(tmp_path):
     folder = tmp_path / first["folder"]
     assert (folder / "files/done.txt").exists()
     second = Benchmark(settings, transport).run("BENCH-04", MODELS[0], "protected", "resume")
-    assert second["run_id"] == first["run_id"] and second["status"] == "completed"
+    assert second["run_id"] == first["run_id"] and second["status"] == "needs_review"
     assert second["duration_s"] >= first["duration_s"]
     history = events(folder)
     assert sum(e["event"] == "tool_start" and e["tool"] == "write_file" for e in history) == 1
@@ -120,7 +120,7 @@ def test_interrupt_partial_file_is_rolled_back_then_replayed(tmp_path, monkeypat
         calls.append(payload)
         return transport(payload)
     result = Benchmark(settings, after_restart).run("BENCH-04", MODELS[0], "local", "interrupt")
-    assert result["status"] == "completed" and len(calls) == 1
+    assert result["status"] == "needs_review" and len(calls) == 1
     assert (tmp_path / result["folder"] / "files/a.txt").read_text() == "complete"
 
 

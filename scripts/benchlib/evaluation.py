@@ -59,6 +59,7 @@ def run_fingerprint(root: Path, folder: Path):
 
 
 def judge_run(client: RouterClient, folder: Path):
+    client.live_calls = 0  # Optional cap applies to this evaluation, not all judge calls.
     root = client.settings.root
     result = read_json(folder / "result.json")
     case_dir = root / "bemnchmark" / result["case_id"]
@@ -81,6 +82,8 @@ def judge_run(client: RouterClient, folder: Path):
                 "advisor_requests": [{"event_id": e["event_id"], "role": "advisor", "request": e["request"]}
                                      for e in history if e["event"] == "llm_request" and e.get("role") == "advisor"],
                 "trace_complete": bool(history and history[-1]["event"] == "run_end")}
+    if (folder / "coverage.json").exists():
+        evidence["coverage_check"] = read_json(folder / "coverage.json")
     no_advisor = not evidence["advisor_requests"] and evidence["trace_complete"]
     schema = Verdict.model_json_schema()
     instructions = JUDGE
