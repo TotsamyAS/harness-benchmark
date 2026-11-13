@@ -77,3 +77,38 @@ def test_unambiguous_bare_filename_and_ambiguity(tmp_path):
     assert 'error' not in tools.execute('read_file',{'path':'meeting.txt'})
     (tmp_path/'files/meeting.txt').write_text('result')
     assert 'Ambiguous' in tools.execute('read_file',{'path':'meeting.txt'})['message']
+
+
+def test_bare_output_filename_is_safely_normalized(tmp_path):
+    inp=tmp_path/'input';inp.mkdir()
+    tools=FileTools(inp,tmp_path/'files',tmp_path/'cache',Trace(tmp_path/'trace',{}))
+    assert 'error' not in tools.execute('write_file',{'path':'report.txt','data':{'text':'result'}})
+    assert (tmp_path/'files/report.txt').read_text()=='result'
+    assert 'error' in tools.execute('write_file',{'path':'../escape.txt','data':{'text':'bad'}})
+
+
+def test_oversized_read_is_paginated_not_rejected(tmp_path):
+    import jsonschema
+    from scripts.benchlib.documents import write_document
+    inp=tmp_path/'input';inp.mkdir()
+    write_document(inp/'x.xlsx',{'sheets':{'Data':[[i] for i in range(120)]}})
+    args={'path':'x.xlsx','sheet':'Data','start_row':1,'count':100}
+    tool=next(t for t in TOOLS if t['function']['name']=='read_sheet')
+    jsonschema.validate(args,tool['function']['parameters'])
+    tools=FileTools(inp,tmp_path/'files',tmp_path/'cache',Trace(tmp_path/'trace',{}))
+    result=tools.execute('read_sheet',args)
+    assert len(result['rows'])==50 and result['next_row']==51
+    assert result['requested_count']==100 and result['effective_count']==50
+
+
+def test_specialized_creation_tools(tmp_path):
+    inp=tmp_path/'input';inp.mkdir()
+    tools=FileTools(inp,tmp_path/'files',tmp_path/'cache',Trace(tmp_path/'trace',{}))
+    for name,args in [
+        ('write_text',{'path':'report.txt','text':'Отчёт'}),
+        ('create_word',{'path':'report.docx','title':'Отчёт','paragraphs':['Результат']}),
+        ('create_presentation',{'path':'report.pptx','slides':[{'title':'Отчёт','bullets':['Результат']}]}),
+    ]:
+        assert 'error' not in tools.execute(name,args)
+        assert (tmp_path/'files'/args['path']).exists()
+    assert 'error' in tools.execute('write_text',{'path':'bad.pptx','text':'wrong format'})

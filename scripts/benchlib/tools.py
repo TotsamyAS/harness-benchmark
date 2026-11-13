@@ -19,7 +19,7 @@ STRING = {"type": "string"}
 TOOLS = [
     schema("list_files", "List all available input/ and output/ files", {}, []),
     schema("read_file", "Read a document. Paths start with input/ or output/. Returns full content; use offset/limit to paginate characters.",
-           {"path": STRING, "offset": {"type": "integer", "minimum": 0}, "limit": {"type": "integer", "minimum": 1, "maximum": 100000}}, ["path"]),
+           {"path": STRING, "offset": {"type": "integer", "minimum": 0}, "limit": {"type": "integer", "minimum": 1}}, ["path"]),
     schema("write_file", 'Create output file. data_json: JSON string. xlsx: {sheets:{Sheet:[[cells]]}}, formula cell: {formula:"=SUM(B2:B3)"}; docx: {title,paragraphs:[],tables:[]}; pptx: {slides:[{title,bullets:[],notes}]}; html/txt: {text:"..."}. Include source references in results.',
            {"path": STRING, "data_json": STRING}, ["path", "data_json"]),
     schema("edit_cells", 'Copy/update xlsx preserving sheets/formulas/styles. changes_json: [{sheet,cell,value}], formula value: {formula:"=..."}. Source input/ or output/, target output/.',
@@ -52,7 +52,7 @@ for tool in TOOLS:
 TOOLS.extend([
     schema("read_sheet", "Read Excel rows as native values, preserving formulas. Use small pages; next_row indicates continuation.",
            {"path": STRING, "sheet": STRING, "start_row": {"type": "integer", "minimum": 1},
-            "count": {"type": "integer", "minimum": 1, "maximum": 50}}, ["path", "sheet", "start_row", "count"]),
+            "count": {"type": "integer", "minimum": 1}}, ["path", "sheet", "start_row", "count"]),
     schema("write_rows", "Write a small batch of Excel rows at explicit coordinates. Creates workbook/sheet if needed. For translation, copy_file first, then replace text cells with edit_cells; do not regenerate unchanged numeric rows. Use at most 25 rows per call. Repeating the same start_row replaces those rows, not appends duplicates.",
            {"path": STRING, "sheet": STRING, "start_row": {"type": "integer", "minimum": 1},
             "rows": {"type": "array", "maxItems": 25, "items": {"type": "array", "items": {"type": ["string", "number", "boolean", "null"]}}}},
@@ -87,7 +87,18 @@ for tool in TOOLS:
                 "title": STRING, "bullets": {"type": "array", "items": STRING}, "notes": STRING}, "required": ["title"], "additionalProperties": False}}},
             "anyOf": [{"required": [k]} for k in ["text", "paragraphs", "tables", "sheets", "slides"]], "additionalProperties": False}
     if f["name"] == "read_sheet":
-        f["description"] += " Get exact sheet names from list_files; never assume Sheet1."
+        f["description"] += " Get exact sheet names from list_files; never assume Sheet1. Requests above 50 rows are automatically paginated; follow next_row."
+
+TOOLS.extend([
+    schema('write_text','Write a text/Markdown/HTML file directly; use append_text for long files.',
+           {'path':STRING,'text':STRING},['path','text']),
+    schema('create_word','Create a Word document from paragraphs and optional tables. Use revise_contract for tracked revisions.',
+           {'path':STRING,'title':STRING,'paragraphs':{'type':'array','minItems':1,'items':STRING}},['path','title','paragraphs']),
+    schema('create_presentation','Create PPTX from a native array of slides; each slide needs title and bullets.',
+           {'path':STRING,'slides':{'type':'array','minItems':1,'items':{'type':'object','properties':{
+               'title':STRING,'bullets':{'type':'array','items':STRING},'notes':STRING},
+               'required':['title','bullets'],'additionalProperties':False}}},['path','slides'])
+])
 
 
 class FileTools:
@@ -107,6 +118,8 @@ class FileTools:
             return safe_path(self.input, value[6:])
         if value.startswith("output/"):
             return safe_path(self.output, value[7:])
+        if write and not value.startswith("input/"):
+            return safe_path(self.output, value)
         if not write:
             candidates = [safe_path(root, value) for root in [self.input, self.output]]
             found = [p for p in candidates if p.is_file()]
@@ -114,7 +127,8 @@ class FileTools:
                 return found[0]
             if len(found) > 1:
                 raise ValueError("Ambiguous filename: specify input/ or output/")
-        raise ValueError("Use input/ for reading or output/ for writing")
+        available=list(inventory(self.input))[:10]
+        raise ValueError(f"File not found or invalid scope. Read input/<file>, write output/<file>. Available input files: {available}")
 
     def execute(self, name: str, args: dict):
         import json
@@ -157,6 +171,7 @@ class FileTools:
                 first, count = args["start_row"], min(args["count"], 50)
                 result = {"rows": list(sheet.iter_rows(min_row=first, max_row=min(first+count-1, sheet.max_row), values_only=True)),
                           "start_row": first, "total_rows": sheet.max_row, "total_columns": sheet.max_column,
+                          "requested_count":args["count"],"effective_count":count,
                           "next_row": first+count if first+count <= sheet.max_row else None}
                 book.close()
             elif name == "write_rows":
@@ -202,6 +217,13 @@ class FileTools:
                     raise ValueError("Invalid pagination")
                 result = {"content": content[offset:offset+limit], "total_chars": len(content),
                           "next_offset": offset+limit if offset+limit < len(content) else None}
+            elif name in {"write_text","create_word","create_presentation"}:
+                target=self.path(args['path'],write=True)
+                allowed={'write_text':{'.txt','.md','.html','.csv','.json'},'create_word':{'.docx'},'create_presentation':{'.pptx'}}
+                if target.suffix.lower() not in allowed[name]:
+                    raise ValueError(f"{name} requires one of {sorted(allowed[name])}; got {target.suffix}")
+                write_document(target,{k:v for k,v in args.items() if k!='path'})
+                result={'written':args['path']}
             elif name == "write_file":
                 target = self.path(args["path"], write=True)
                 data = json.loads(args["data_json"])

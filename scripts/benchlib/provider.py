@@ -10,6 +10,12 @@ from .core import Settings, Trace, digest, read_json, write_json, VERSION
 
 class RequestPaused(RuntimeError):
     """Pending request can be resumed; ambiguous sends require explicit permission."""
+    def __init__(self, message):
+        super().__init__(message)
+        self.reason = ("uncertain_delivery" if any(s in message for s in ["Previous send", "may be billed"])
+                       else "call_limit" if "call limit" in message
+                       else "network_unavailable" if "Network retry" in message
+                       else "tool_loop" if "Repeated identical tool" in message else "other")
 
 
 def retry_kind(exc):
@@ -20,10 +26,12 @@ def retry_kind(exc):
             return "safe"
         return "ambiguous" if exc.status_code >= 500 else "fatal"
     cause = exc
-    while cause is not None:
+    seen = set()
+    while cause is not None and id(cause) not in seen:
+        seen.add(id(cause))
         if isinstance(cause, (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout, ConnectionRefusedError)):
             return "safe"
-        cause = cause.__cause__
+        cause = cause.__cause__ or cause.__context__
     if isinstance(exc, (APIConnectionError, APITimeoutError, httpx.TransportError)):
         return "ambiguous"
     return "fatal"
@@ -38,19 +46,25 @@ class RouterClient:
         self.sleeper = sleeper
         self.cache = settings.root / "bemnchmark" / "_cache" / "llm"
 
-    def _call(self, payload):
+    def _ensure_client(self):
         if self.transport:
-            return self.transport(payload)
+            return
         if self.client is None:
             # The agent never inspects .env. Only this runtime path loads credentials.
             from dotenv import load_dotenv
             from openai import OpenAI
+            import httpx
             load_dotenv(self.settings.root / ".env", override=False)
             key = os.environ.get("ROUTERAI_API_KEY") or os.environ.get("OPENAI_API_KEY")
             if not key:
                 raise RuntimeError("Set ROUTERAI_API_KEY in .env; its value is never displayed")
             self.client = OpenAI(api_key=key, base_url="https://routerai.ru/api/v1",
-                                 timeout=self.settings.timeout, max_retries=0)
+                                 timeout=httpx.Timeout(self.settings.timeout,connect=15,pool=15), max_retries=0)
+
+    def _call(self, payload):
+        if self.transport:
+            return self.transport(payload)
+        self._ensure_client()
         return self.client.chat.completions.create(**payload).model_dump(mode="json")
 
     def complete(self, payload: dict, role: str, trace: Trace, cache_context=None):
@@ -73,6 +87,9 @@ class RouterClient:
                         billed_this_run=False, estimated_cost_rub=0,
                         original_estimated_cost_rub=record.get("estimated_cost_rub"))
             return response
+        if pending.exists() and read_json(pending).get("stage") == "prepared":
+            pending.unlink()
+            trace.event("pending_recovered", role=role, reason="not_sent")
         if pending.exists() and not self.settings.retry_ambiguous:
             trace.event("llm_paused", role=role, parent_id=request_id, reason="unconfirmed_previous_send")
             raise RequestPaused("Previous send has no confirmed response. Check provider billing; set retry_ambiguous=True explicitly to resend")
@@ -83,13 +100,15 @@ class RouterClient:
         if self.transport is None:
             checks = validate_request(payload, self.settings.root)
             trace.event("request_preflight", role=role, checks=checks)
+        self._ensure_client()
         for attempt in range(self.settings.network_retries+1):
             if self.settings.max_calls is not None and self.live_calls >= self.settings.max_calls:
                 raise RequestPaused("Session API call limit reached; checkpoint retained")
-            self.live_calls += 1
-            write_json(pending, {"request_hash": key, "attempt": attempt, "role": role})
+            write_json(pending, {"request_hash": key, "attempt": attempt, "role": role,"stage":"prepared"})
             trace.event("llm_attempt", role=role, parent_id=request_id, attempt=attempt+1, cache_key=key)
             try:
+                write_json(pending, {"request_hash": key, "attempt": attempt, "role": role,"stage":"sending"})
+                self.live_calls += 1
                 response = self._call(payload)
                 break
             except Exception as exc:

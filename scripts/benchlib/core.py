@@ -59,7 +59,7 @@ class Settings:
     max_steps: int = 150
     max_calls: int | None = None
     max_tokens: int | None = None
-    timeout: float = 180
+    timeout: float = 600
     network_retries: int = 12
     retry_initial_s: float = 5
     retry_max_s: float = 30

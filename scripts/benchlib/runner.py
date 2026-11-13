@@ -205,7 +205,11 @@ class Benchmark:
                             result["next"]=assignment(state["coverage"])
                         trace.event("tool_result", step=state["step"], tool_call_id=call["id"], tool=name, result=result)
                         state["messages"].append({"role": "tool", "tool_call_id": call["id"], "content": canonical(result)})
-                        failure_key = digest({"tool": name, "arguments": call["function"]["arguments"]})
+                        try:
+                            canonical_arguments=json.loads(call["function"]["arguments"])
+                        except ValueError:
+                            canonical_arguments=call["function"]["arguments"]
+                        failure_key = digest({"tool": name, "arguments": canonical_arguments})
                         failures = state.setdefault("tool_failures", {})
                         if "error" in result:
                             if state.get("last_tool_failure") != failure_key:
@@ -234,8 +238,9 @@ class Benchmark:
             raise
         except Exception as exc:
             state["status"] = "paused" if isinstance(exc, RequestPaused) else "error"
+            state["stop_reason"] = getattr(exc,"reason",type(exc).__name__)
             trace.event("run_paused" if isinstance(exc, RequestPaused) else "run_error",
-                        error_type=type(exc).__name__, message=str(exc), checkpoint_retained=True)
+                        error_type=type(exc).__name__, message=str(exc), stop_reason=state["stop_reason"],checkpoint_retained=True)
         finally:
             write_json(folder / "coverage.json",report(state["coverage"]))
             if state["status"] == "completed":
@@ -260,6 +265,7 @@ class Benchmark:
                 write_json(folder / "checkpoint.json", {"state": state, "checksum": digest(state)})
             trace.event("run_end", status=state["status"], artifacts=inventory(folder / "files"))
             result = {**state["context"], "status": state["status"], "final": state["final"],
+                      "stop_reason":state.get("stop_reason"),
                       "artifacts": inventory(folder / "files"), "configuration": config,
                       "trace_digest": digest((folder / "events.jsonl").read_text(encoding="utf-8")),
                       "case_hash": digest(case), "input_hashes": case["input_hashes"],
@@ -314,6 +320,9 @@ class Benchmark:
                             result = self.run(case["id"], model, mode, batch_id, repetition)
                             print(f"{case['id']} | {model} | {mode} | attempt {attempt}/3 | {result['status']}")
                             if result["status"] not in {"error", "paused"}:
+                                break
+                            if result.get("stop_reason") in {"uncertain_delivery","call_limit"}:
+                                print(f"Skipping retries: {result['stop_reason']}; continuing matrix")
                                 break
                             # A malformed paid response must not trap all retries in the same cache entry.
                             # Keep it for audit, but let the pending action obtain a fresh response next time.

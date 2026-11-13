@@ -166,3 +166,22 @@ def test_chinese_contact_in_separate_excel_cell(tmp_path):
                            policy="pseudonymize_affine", vault_dir=tmp_path)
     assert "陈合成" not in guard["question"]
     assert restore_advice(guard["question"], tmp_path, guard["vault_id"]) == question
+
+
+def test_prepared_but_not_sent_marker_does_not_block(tmp_path):
+    from scripts.benchlib.core import digest,write_json,VERSION
+    payload={'model':MODELS[0],'messages':[]}
+    key=digest({'version':VERSION,'endpoint':'https://routerai.ru/api/v1','payload':payload,'context':None})
+    client=RouterClient(Settings(tmp_path,live=True),lambda p:response({'content':'ok'}))
+    write_json(client.cache/f'{key}.pending.json',{'stage':'prepared','request_hash':key})
+    client.complete(payload,'small',Trace(tmp_path/'trace',{}))
+    assert client.live_calls==1 and not list(client.cache.glob('*.pending.json'))
+
+
+def test_client_setup_failure_creates_no_send_marker(tmp_path,monkeypatch):
+    client=RouterClient(Settings(tmp_path,live=True))
+    def fail():raise RuntimeError('local initialization failure')
+    monkeypatch.setattr(client,'_ensure_client',fail)
+    with pytest.raises(RuntimeError,match='initialization'):
+        client.complete({'model':MODELS[0],'messages':[{'role':'user','content':'test'}],'max_tokens':10},'small',Trace(tmp_path/'trace',{}))
+    assert client.live_calls==0 and not list(client.cache.glob('*.pending.json'))
