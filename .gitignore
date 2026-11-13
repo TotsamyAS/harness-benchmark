@@ -1,9 +1,14 @@
 .agents/
 .tmp/
 .venv/
-docs/
+docs/*
 !docs/routerai-models-2026-11-12.json
 !docs/benchmark-cases.md
+!docs/results/
+docs/results/*
+!docs/results/full-008/
+docs/results/full-008/*
+!docs/results/full-008/20261113T182742-e96fff06/
 .env
 .env.*
 !.env.example

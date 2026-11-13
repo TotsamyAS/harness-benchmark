@@ -4,6 +4,7 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 from scripts.benchlib.core import COLORS,read_json,write_json
+from scripts.benchlib.partial_analysis import short_label
 
 def render(snapshot):
     out=snapshot/'exports';events=pd.read_csv(out/'events.csv');charts=[]
@@ -27,7 +28,7 @@ def render(snapshot):
             ax.text((x+xx)/2,(y+yy)/2,str(count),fontsize=8,bbox={'facecolor':'white','alpha':.7,'edgecolor':'none'})
         for n,(x,y) in positions.items():
             ax.text(x,y,n,ha='center',va='center',fontsize=9,bbox={'boxstyle':'round,pad=.5','facecolor':COLORS.get(model,'#DDDDDD'),'edgecolor':'black'})
-        ax.set_xlim(-1.6,1.6);ax.set_ylim(-1.4,1.4);ax.axis('off');ax.set_title('Карта переходов: '+model+'\nНаблюдаемые действия; стрелка — число переходов')
+        ax.set_xlim(-1.6,1.6);ax.set_ylim(-1.4,1.4);ax.axis('off');ax.set_title('Карта переходов: '+short_label(model)+'\nНаблюдаемые действия; стрелка — число переходов')
         name='event_map_'+model.replace('/','__')
         for ext in ['png','svg']:fig.savefig(out/(name+'.'+ext),dpi=160,bbox_inches='tight')
         plt.close(fig);charts.append(name)

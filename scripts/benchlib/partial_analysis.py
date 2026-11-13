@@ -133,6 +133,17 @@ def dataset(snapshot,allow_unconfirmed=True):
     return frame,log,edges
 
 
+def short_label(value):
+    """Compact presentation labels; keep full identifiers in exported data."""
+    if isinstance(value, tuple):
+        return ', '.join(short_label(item) for item in value)
+    value = str(value)
+    for token, label in [('gemma-', 'gemma'), ('gpt-oss-', 'gpt-oss'), ('ministral-', 'ministral'), ('qwen3.', 'qwen')]:
+        if token in value:
+            return label
+    return value
+
+
 def render(snapshot,allow_unconfirmed=True):
     frame,log,edges=dataset(snapshot,allow_unconfirmed);out=snapshot/'exports';out.mkdir(exist_ok=True)
     for name,data in [('runs',frame),('events',log),('transitions',edges)]:data.to_csv(out/f'{name}.csv',index=False,encoding='utf-8-sig')
@@ -156,7 +167,7 @@ def render(snapshot,allow_unconfirmed=True):
             for j,mode in enumerate(MODES):
                 if (m,mode) in values and pd.notna(values.loc[(m,mode)]):
                     ax.bar(i+(j-1)*.25,values.loc[(m,mode)],.23,color=COLORS[m],edgecolor='black',hatch=HATCHES[mode])
-        ax.set_xticks(range(len(models)),[m.split('/')[-1] for m in models],rotation=15);ax.set_title(title)
+        ax.set_xticks(range(len(models)),[short_label(m) for m in models]);ax.set_title(title)
         if values.dropna().empty:
             ax.text(.5,.5,'Нет оценённых данных — судья ещё не запущен',transform=ax.transAxes,ha='center')
         ax.legend(handles=[Patch(facecolor='white',edgecolor='black',hatch=HATCHES[x],label=x) for x in MODES]);save(fig,name)
@@ -185,7 +196,7 @@ def render(snapshot,allow_unconfirmed=True):
         if table.empty:return
         fig,ax=plt.subplots(figsize=(max(9,len(table.columns)*.55),max(3,len(table)*.45)))
         values=table.to_numpy(dtype=float);im=ax.imshow(values,aspect='auto',cmap='Blues')
-        ax.set_xticks(range(len(table.columns)),table.columns,rotation=70,ha='right');ax.set_yticks(range(len(table)),table.index)
+        ax.set_xticks(range(len(table.columns)),[short_label(x) for x in table.columns],rotation=70,ha='right');ax.set_yticks(range(len(table)),[short_label(x) for x in table.index])
         ax.set_title(title);fig.colorbar(im,ax=ax);table.to_csv(out/(name+'.csv'),encoding='utf-8-sig');save(fig,name)
     heat(frame.pivot_table(index='case_id',columns=['model','mode'],values='quality',aggfunc='mean'),'Качество по заданиям: пусто = нет оценки','quality_matrix')
     tools=log[log.event=='tool_result']  # Includes coverage tools and advisor, not only FileTools.
@@ -209,7 +220,7 @@ def render(snapshot,allow_unconfirmed=True):
             ax.barh(y,duration,left=max(0,(e.time-origin).total_seconds()-duration),height=.7,
                     color=COLORS[m],edgecolor='black',hatch=HATCHES[e.mode],alpha=.7)
         ax.set_yticks(range(len(ids)),[frame.set_index('run_id').loc[i,'case_id']+'/'+frame.set_index('run_id').loc[i,'mode'] for i in ids],fontsize=6)
-        ax.set_xlabel('Секунды от первого сохранённого события; UTC, включая разрывы между прогонами');ax.set_title('Карта времени: '+m)
+        ax.set_xlabel('Секунды от первого сохранённого события; UTC, включая разрывы между прогонами');ax.set_title('Карта времени: '+short_label(m))
         save(fig,'timeline_'+m.replace('/','__'))
     top=edges.groupby(['from','to'])['count'].sum().nlargest(25)
     if not top.empty:

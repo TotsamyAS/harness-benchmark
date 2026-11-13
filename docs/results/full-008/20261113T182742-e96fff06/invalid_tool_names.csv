@@ -1,0 +1,16 @@
+﻿model,tool,calls
+openai/gpt-oss-20b,assistant<|channel|>commentary<|channel|>commentary,2
+openai/gpt-oss-20b,list_files<|channel|>commentary,5
+openai/gpt-oss-20b,next_work<|channel|>commentary,4
+openai/gpt-oss-20b,read_file<|channel|>commentary,6
+openai/gpt-oss-20b,read_sheet<|channel|>commentary,7
+openai/gpt-oss-20b,send_record,1
+openai/gpt-oss-20b,submit<|channel|>commentary<|channel|>commentary,2
+openai/gpt-oss-20b,submit_work<|channel|>,2
+openai/gpt-oss-20b,submit_work<|channel|>commentary,21
+openai/gpt-oss-20b,submit_work<|channel|>commentary<|channel|>commentary,5
+openai/gpt-oss-20b,submit_work<|channel|>json,2
+openai/gpt-oss-20b,submit_workjson,2
+openai/gpt-oss-20b,write_file<|channel|>commentary,9
+openai/gpt-oss-20b,write_file<|channel|>json,2
+openai/gpt-oss-20b,write_text<|channel|>commentary,5
