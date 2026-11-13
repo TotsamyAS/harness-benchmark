@@ -35,7 +35,11 @@ def read_document(path: Path):
                 for i, slide in enumerate(Presentation(path).slides)]
     if suffix == ".pdf":
         from pypdf import PdfReader
-        pages = [{"page": i+1, "text": p.extract_text() or ""} for i, p in enumerate(PdfReader(path).pages)]
+        source_pages=list(PdfReader(path).pages)
+        pages = [{"page": i+1, "text": p.extract_text() or ""} for i, p in enumerate(source_pages)]
+        scanned=[i+1 for i,p in enumerate(source_pages) if not pages[i]['text'].strip() and len(p.images)>0]
+        if scanned:
+            raise ValueError(f"PDF contains image-only pages requiring local OCR: {scanned}; partial extraction refused")
         if not any(p["text"].strip() for p in pages):
             raise ValueError("Scanned PDF needs local OCR; OCR is not silently delegated to an external service")
         return pages
@@ -52,8 +56,14 @@ def write_document(path: Path, data: dict):
         from openpyxl.styles import Font, PatternFill
         book = Workbook()
         book.remove(book.active)
+        names=list(data["sheets"])
+        import re
+        if not names or any(not n or len(n)>31 or re.search(r'[\\/*?:\[\]]',n) for n in names):
+            raise ValueError("Excel sheet names must be nonempty, <=31 characters and contain no \\ / * ? : [ ]")
+        if len({n.casefold() for n in names})!=len(names):
+            raise ValueError("Excel sheet names must be unique ignoring case")
         for name, rows in data["sheets"].items():
-            sheet = book.create_sheet(name[:31])
+            sheet = book.create_sheet(name)
             for row in rows:
                 # Formulas must be explicitly supplied as {formula: "=..."}.
                 sheet.append([v["formula"] if isinstance(v, dict) and "formula" in v
@@ -129,18 +139,32 @@ def revise_contract(source: Path, target: Path, changes: list[dict]):
     from docx.oxml import OxmlElement
     from docx.oxml.ns import qn
     doc = Document(source)
-    for i, change in enumerate(changes):
-        matches = [p for p in doc.paragraphs if change["old"] in p.text]
+    from docx.text.paragraph import Paragraph
+    paragraphs=[Paragraph(p,doc) for p in doc.element.body.iter(qn('w:p'))]
+    selected=[]
+    for change in changes:
+        if not change.get('old'):
+            raise ValueError("old clause must not be empty")
+        matches=[p for p in paragraphs if change['old'] in p.text]
         if len(matches) != 1:
             raise ValueError("Each old clause must match exactly one paragraph")
-        p = matches[0]
+        if matches[0].text.count(change['old'])!=1:
+            raise ValueError("old clause occurs multiple times; provide a longer unique clause")
+        if any(matches[0]._p is p._p for p in selected):
+            raise ValueError("Multiple revisions in one paragraph require one combined replacement")
+        if any(el.tag in {qn('w:ins'),qn('w:del')} for el in matches[0]._p.iter()):
+            raise ValueError("Paragraph already has tracked revisions; refusing to erase existing revision history")
+        selected.append(matches[0])
+    ids=[int(el.get(qn('w:id'))) for el in doc.element.iter() if el.tag in {qn('w:ins'),qn('w:del')} and str(el.get(qn('w:id'),'')).isdigit()]
+    next_id=max(ids,default=-1)+1
+    for i,(change,p) in enumerate(zip(changes,selected)):
         before, after = p.text.split(change["old"], 1)
         p.clear()
         if before:
             p.add_run(before)
         for tag, texttag, text in [("del", "delText", change["old"]), ("ins", "t", change["new"])]:
             revision = OxmlElement("w:"+tag)
-            revision.set(qn("w:id"), str(2*i + (tag == "ins")))
+            revision.set(qn("w:id"), str(next_id+2*i + (tag == "ins")))
             revision.set(qn("w:author"), "Benchmark agent")
             revision.set(qn("w:date"), "2026-01-01T00:00:00Z")
             r = OxmlElement("w:r")

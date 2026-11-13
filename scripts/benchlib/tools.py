@@ -271,6 +271,10 @@ class FileTools:
                     for row in table.rows:
                         for cell in row.cells:
                             paragraphs.extend(cell.paragraphs)
+                available={p.text for p in paragraphs}
+                missing=[text for text in mapping if text not in available]
+                if missing:
+                    raise ValueError(f"No exact paragraph/cell match for {missing[:3]}; use read_file to obtain exact text. Nothing saved")
                 for p in paragraphs:
                     if p.text in mapping:
                         p.text = mapping[p.text]
