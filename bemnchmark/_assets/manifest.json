@@ -1,0 +1,10 @@
+{
+  "konva.min.js": {
+    "url": "https://cdn.jsdelivr.net/npm/konva@9.3.18/konva.min.js",
+    "sha256": "9c635447e595b43c3f6c15026e8cfa83f668066034f35d04cddf3dff6888d9b6"
+  },
+  "lucide.min.js": {
+    "url": "https://cdn.jsdelivr.net/npm/lucide@0.468.0/dist/umd/lucide.min.js",
+    "sha256": "3411692820cb8d47543f69496aa25fd603a358f4498046f41c508a5a3342210e"
+  }
+}
