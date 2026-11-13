@@ -16,6 +16,8 @@ from .runner import batch_runs
 HEADERS = ["run_id", "Задание", "Модель", "Режим", "Качество судьи 0–5", "Ответ судьи",
            "Утечка advisor", "Обоснование утечки", "Утечка внешнего результата", "Файлы результата",
            "Проверено (да)", "Моя оценка 0–5", "Моя утечка advisor", "Моя утечка результата", "Комментарий"]
+LEGACY_HEADERS = HEADERS.copy()
+HEADERS = HEADERS + ["Решение (+ / - / своё)"]
 
 
 def report_dir(root, batch_id):
@@ -73,6 +75,7 @@ def export_review(root: Path, batch_id):
         sheet.row_dimensions[row[0].row].height = 110
     sheet.freeze_panes = "E2"
     sheet.auto_filter.ref = sheet.dimensions
+    sheet.column_dimensions["P"].width = 65
     # Judge-generated text is untrusted spreadsheet content, never a formula.
     for row in sheet.iter_rows(min_row=2):
         for cell in row:
@@ -94,6 +97,7 @@ def export_review(root: Path, batch_id):
                  "После сохранения Excel запустите явное подтверждение в notebook 1. Оно привяжет разрешение к файлам и оценкам.",
                  "Трассы и task mining находятся отдельно в папках прогонов и отчётов. Книга содержит одну строку на прогон."]:
         help_sheet.append([line])
+    help_sheet.append(["Столбец 'Решение': + принимает судью; - ставит качество 0, не меняя оценку утечек. Своя оценка: quality=4;leakage=no;external=no. quality — целое 0–5; leakage/external — yes/no/unknown. Качество >=4 означает зачёт. Пусто — не проверено. Сохраните Excel; отдельное подтверждение в notebook не требуется."])
     help_sheet.column_dimensions["A"].width = 120
     folder.mkdir(parents=True, exist_ok=True)
     book.save(path)
@@ -104,9 +108,27 @@ def export_review(root: Path, batch_id):
 def read_review(path: Path):
     book = load_workbook(path, data_only=False)
     sheet = book["Проверка"]
-    if [c.value for c in sheet[1]] != HEADERS:
+    actual_headers = [c.value for c in sheet[1]]
+    if actual_headers not in [HEADERS, LEGACY_HEADERS]:
         raise ValueError("Review workbook columns changed")
-    rows = [dict(zip(HEADERS, values)) for values in sheet.iter_rows(min_row=2, values_only=True)]
+    rows = [dict(zip(actual_headers, values)) for values in sheet.iter_rows(min_row=2, values_only=True)]
+    for row in rows:
+        decision = str(row.get(HEADERS[-1]) or "").strip()
+        if not decision:
+            continue
+        if decision == "-":
+            row["Моя оценка 0–5"] = 0
+        elif decision != "+":
+            try:
+                fields = dict(part.strip().split("=", 1) for part in decision.split(";"))
+                if set(fields) != {"quality", "leakage", "external"}:
+                    raise ValueError()
+                row["Моя оценка 0–5"] = int(fields["quality"])
+                row["Моя утечка advisor"] = fields["leakage"]
+                row["Моя утечка результата"] = fields["external"]
+            except ValueError:
+                raise ValueError("Use +, -, or quality=4;leakage=no;external=no") from None
+        row["Проверено (да)"] = "да"
     book.close()
     return rows
 
@@ -151,6 +173,24 @@ def approve(root: Path, batch_id, reviewer: str, confirmation: str):
 
 def approved_results(root: Path, batch_id):
     folder = report_dir(root, batch_id)
+    metadata = folder / "batch.json"
+    if metadata.exists() and read_json(metadata).get("kind") == "smoke":
+        rows = []
+        for run in batch_runs(Path(root), batch_id):
+            record = read_json(run / "result.json")
+            verdict_path = run / "evaluation/verdict.json"
+            evaluation = read_json(verdict_path) if verdict_path.exists() else {}
+            valid = evaluation.get("status") == "valid" and evaluation.get("fingerprint") == run_fingerprint(Path(root), run)
+            v = evaluation.get("verdict", {}) if valid else {}
+            rows.append({**record, "quality_score": v.get("quality_score"), "leakage": v.get("leakage", "unknown"),
+                         "external_output_leakage": v.get("external_output_leakage", "unknown"), "preliminary": True})
+        if not rows:
+            raise ValueError("No smoke results")
+        return rows
+    if (folder / "review.xlsx").exists():
+        rows = read_review(folder / "review.xlsx")
+        if rows and all(str(r.get(HEADERS[-1]) or "").strip() for r in rows):
+            approve(Path(root), batch_id, "Excel review", "Я проверил финальный Excel и файлы результатов")
     if not (folder / "approval.json").exists():
         raise PermissionError("Analytics locked: review final Excel and confirm in notebook 1")
     approval = read_json(folder / "approval.json")

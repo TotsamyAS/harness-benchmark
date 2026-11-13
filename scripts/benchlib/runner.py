@@ -163,9 +163,17 @@ class Benchmark:
                             trace.event("tool_argument_error", tool_call_id=call["id"], result=result)
                         trace.event("tool_result", step=state["step"], tool_call_id=call["id"], tool=name, result=result)
                         state["messages"].append({"role": "tool", "tool_call_id": call["id"], "content": canonical(result)})
+                        failure_key = digest({"tool": name, "arguments": call["function"]["arguments"]})
+                        failures = state.setdefault("tool_failures", {})
+                        if "error" in result:
+                            failures[failure_key] = failures.get(failure_key, 0)+1
+                        else:
+                            failures.pop(failure_key, None)
                         state["tool_index"] += 1
                         state["tool_in_progress"] = False
                         persist()
+                        if failures.get(failure_key, 0) >= 3:
+                            raise RequestPaused("Repeated identical tool failure; checkpoint retained. Fix tool arguments before continuing")
                     state["step"] += 1
                     state["phase"] = "model"
                     persist()

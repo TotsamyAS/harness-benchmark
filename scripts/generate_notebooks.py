@@ -62,8 +62,10 @@ RUN_BENCHMARK = False
 RUN_JUDGE = False
 FORCE_REFRESH = False
 BATCH_ID = "pilot-001"
-SELECTED_CASES = ["BENCH-01"]   # None — все 17
-SELECTED_MODELS = MODELS[:1]   # MODELS — все четыре в согласованном порядке
+RUN_MODE = "smoke"  # "smoke" or "full"
+assert RUN_MODE in {"smoke", "full"}
+SELECTED_CASES = ["BENCH-01"] if RUN_MODE == "smoke" else None
+SELECTED_MODELS = ["qwen/qwen3.5-9b"] if RUN_MODE == "smoke" else MODELS
 SELECTED_MODES = MODES
 REPETITIONS = 1
 MAX_API_CALLS = None  # no application call limit
@@ -71,10 +73,12 @@ NETWORK_RETRIES = 12
 RETRY_AMBIGUOUS = False  # включать только после проверки возможного списания
 GUARD_POLICY = "pseudonymize_affine"
 settings = Settings(ROOT, live=LIVE, force_refresh=FORCE_REFRESH,
-                    max_steps=30, max_tokens=None, max_calls=MAX_API_CALLS,
+                    max_steps=150, max_tokens=None, max_calls=MAX_API_CALLS,
                     network_retries=NETWORK_RETRIES, retry_initial_s=5, retry_max_s=30,
                     retry_ambiguous=RETRY_AMBIGUOUS, guard_policy=GUARD_POLICY)
 bench = Benchmark(settings)
+from scripts.benchlib.core import write_json
+write_json(ROOT / "bemnchmark" / "_reports" / BATCH_ID / "batch.json", {"kind": RUN_MODE})
 '''),
         ("md", """## Синтетические входные документы
 

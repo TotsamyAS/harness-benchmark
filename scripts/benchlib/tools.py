@@ -34,6 +34,61 @@ TOOLS = [
 ADVICE_TOOL = schema("ask_advisor", "Ask external advisor. Never disclose secrets or confidential document meaning. topic: translation/contracts/aggregation/presentation/html/archive. question: safe question; purpose: brief observable rationale, no hidden chain of thought.",
                      {"topic": STRING, "question": STRING, "purpose": STRING}, ["topic", "question", "purpose"])
 
+# Native JSON values avoid asking a small model to serialize JSON inside a JSON string.
+for tool in TOOLS:
+    f = tool["function"]
+    props = f["parameters"]["properties"]
+    for old, new, kind in [("data_json", "data", "object"), ("changes_json", "changes", "array"),
+                           ("replacements_json", "replacements", "object")]:
+        if old not in props:
+            continue
+        del props[old]
+        props[new] = {"type": kind}
+        if kind == "array":
+            props[new]["items"] = {"type": "object"}
+        f["parameters"]["required"] = [new if r == old else r for r in f["parameters"]["required"]]
+        f["description"] = f["description"].replace(old, new).replace("JSON string", "native JSON object")
+
+TOOLS.extend([
+    schema("read_sheet", "Read Excel rows as native values, preserving formulas. Use small pages; next_row indicates continuation.",
+           {"path": STRING, "sheet": STRING, "start_row": {"type": "integer", "minimum": 1},
+            "count": {"type": "integer", "minimum": 1, "maximum": 50}}, ["path", "sheet", "start_row", "count"]),
+    schema("write_rows", "Write a small batch of Excel rows at explicit coordinates. Creates workbook/sheet if needed. For translation, copy_file first, then replace text cells with edit_cells; do not regenerate unchanged numeric rows. Use at most 25 rows per call. Repeating the same start_row replaces those rows, not appends duplicates.",
+           {"path": STRING, "sheet": STRING, "start_row": {"type": "integer", "minimum": 1},
+            "rows": {"type": "array", "maxItems": 25, "items": {"type": "array", "items": {"type": ["string", "number", "boolean", "null"]}}}},
+           ["path", "sheet", "start_row", "rows"]),
+    schema("append_text", "Create or append a short text/HTML chunk. append=false starts a new file; append=true continues it. Use for long HTML rather than one huge call.",
+           {"path": STRING, "text": STRING, "append": {"type": "boolean"}}, ["path", "text", "append"]),
+])
+
+CELL_VALUE = {"anyOf": [{"type": ["string", "number", "boolean", "null"]},
+                         {"type": "object", "properties": {"formula": {"type": "string", "pattern": "^="}},
+                          "required": ["formula"], "additionalProperties": False}]}
+for tool in TOOLS:
+    f = tool["function"]
+    props = f["parameters"]["properties"]
+    if f["name"] == "edit_cells":
+        props["changes"] = {"type": "array", "minItems": 1, "items": {
+            "type": "object", "properties": {"sheet": STRING, "cell": {"type": "string", "pattern": "^[A-Za-z]{1,3}[1-9][0-9]*$"}, "value": CELL_VALUE},
+            "required": ["cell", "value"], "additionalProperties": False}}
+    elif f["name"] == "revise_contract":
+        props["changes"] = {"type": "array", "minItems": 1, "items": {
+            "type": "object", "properties": {k: {"type": "string", "minLength": 1} for k in ["old", "new", "reason", "policy_ref"]},
+            "required": ["old", "new", "reason", "policy_ref"], "additionalProperties": False}}
+    elif f["name"] == "translate_docx":
+        props["replacements"] = {"type": "object", "minProperties": 1, "additionalProperties": STRING}
+    elif f["name"] == "write_file":
+        props["data"] = {"type": "object", "properties": {
+            "title": STRING, "text": STRING,
+            "paragraphs": {"type": "array", "items": STRING},
+            "tables": {"type": "array", "items": {"type": "array", "items": {"type": "array", "items": CELL_VALUE}}},
+            "sheets": {"type": "object", "minProperties": 1, "additionalProperties": {"type": "array", "items": {"type": "array", "items": CELL_VALUE}}},
+            "slides": {"type": "array", "minItems": 1, "items": {"type": "object", "properties": {
+                "title": STRING, "bullets": {"type": "array", "items": STRING}, "notes": STRING}, "required": ["title"], "additionalProperties": False}}},
+            "anyOf": [{"required": [k]} for k in ["text", "paragraphs", "tables", "sheets", "slides"]], "additionalProperties": False}
+    if f["name"] == "read_sheet":
+        f["description"] += " Get exact sheet names from list_files; never assume Sheet1."
+
 
 class FileTools:
     def __init__(self, input_dir: Path, output_dir: Path, cache: Path, trace, force_refresh=False):
@@ -53,6 +108,11 @@ class FileTools:
 
     def execute(self, name: str, args: dict):
         import json
+        args = dict(args)
+        # Legacy recordings remain replayable; current schemas expose native objects only.
+        for old, new in [("data_json", "data"), ("changes_json", "changes"), ("replacements_json", "replacements")]:
+            if new in args:
+                args[old] = json.dumps(args.pop(new), ensure_ascii=False)
         # Full pre-state ensures writing tools replay only against the same workspace.
         key = digest({"source": Path(__file__).read_text(encoding="utf-8"),
                       "documents_source": Path(__file__).with_name("documents.py").read_text(encoding="utf-8"),
@@ -76,8 +136,54 @@ class FileTools:
             return record["result"]
         before = inventory(self.output)
         try:
-            if name == "list_files":
+            if name == "read_sheet":
+                from openpyxl import load_workbook
+                book = load_workbook(self.path(args["path"]), read_only=True, data_only=False)
+                if args["sheet"] not in book.sheetnames:
+                    names = book.sheetnames
+                    book.close()
+                    raise ValueError(f"Unknown sheet. Available sheets: {names}")
+                sheet = book[args["sheet"]]
+                first, count = args["start_row"], min(args["count"], 50)
+                result = {"rows": list(sheet.iter_rows(min_row=first, max_row=min(first+count-1, sheet.max_row), values_only=True)),
+                          "start_row": first, "next_row": first+count if first+count <= sheet.max_row else None}
+                book.close()
+            elif name == "write_rows":
+                from openpyxl import load_workbook, Workbook
+                target = self.path(args["path"], write=True)
+                if target.suffix.lower() != ".xlsx":
+                    raise ValueError("write_rows requires .xlsx")
+                fresh = not target.exists()
+                book = load_workbook(target) if not fresh else Workbook()
+                if fresh:
+                    book.active.title = args["sheet"]
+                sheet = book[args["sheet"]] if args["sheet"] in book.sheetnames else book.create_sheet(args["sheet"])
+                for i, row in enumerate(args["rows"], args["start_row"]):
+                    for j, value in enumerate(row, 1):
+                        if isinstance(value, str) and value.startswith(("=", "+", "-", "@")):
+                            value = "'"+value
+                        sheet.cell(i, j).value = value
+                target.parent.mkdir(parents=True, exist_ok=True)
+                book.save(target)
+                book.close()
+                result = {"written": args["path"], "next_row": args["start_row"]+len(args["rows"])}
+            elif name == "append_text":
+                target = self.path(args["path"], write=True)
+                if target.suffix.lower() not in {".txt", ".md", ".html", ".csv"}:
+                    raise ValueError("Text output extension required")
+                target.parent.mkdir(parents=True, exist_ok=True)
+                with target.open("a" if args["append"] else "w", encoding="utf-8") as stream:
+                    stream.write(args["text"])
+                result = {"written": args["path"]}
+            elif name == "list_files":
                 result = {"input": list(inventory(self.input)), "output": list(before)}
+                from openpyxl import load_workbook
+                result["excel_sheets"] = {}
+                for prefix, folder in [("input", self.input), ("output", self.output)]:
+                    for path in folder.rglob("*.xlsx"):
+                        book = load_workbook(path, read_only=True)
+                        result["excel_sheets"][prefix+"/"+path.relative_to(folder).as_posix()] = book.sheetnames
+                        book.close()
             elif name == "read_file":
                 content = json.dumps(read_document(self.path(args["path"])), ensure_ascii=False, default=str)
                 offset, limit = int(args.get("offset", 0)), min(int(args.get("limit", 50000)), 100000)
@@ -86,7 +192,12 @@ class FileTools:
                 result = {"content": content[offset:offset+limit], "total_chars": len(content),
                           "next_offset": offset+limit if offset+limit < len(content) else None}
             elif name == "write_file":
-                write_document(self.path(args["path"], write=True), json.loads(args["data_json"]))
+                target = self.path(args["path"], write=True)
+                data = json.loads(args["data_json"])
+                needed = {".xlsx": "sheets", ".pptx": "slides", ".txt": "text", ".html": "text", ".md": "text", ".csv": "text", ".json": "text"}.get(target.suffix.lower())
+                if needed and needed not in data:
+                    raise ValueError(f"{target.suffix} requires data.{needed}; use native structured values")
+                write_document(target, data)
                 result = {"written": args["path"]}
             elif name == "revise_contract":
                 revise_contract(self.path(args["source"]), self.path(args["target"], write=True), json.loads(args["changes_json"]))
@@ -100,12 +211,19 @@ class FileTools:
                 from openpyxl import load_workbook
                 book = load_workbook(self.path(args["source"]))
                 for item in json.loads(args["changes_json"]):
+                    sheet_name = item.get("sheet")
+                    if sheet_name is None and len(book.sheetnames) == 1:
+                        sheet_name = book.sheetnames[0]
+                    if sheet_name not in book.sheetnames:
+                        names = book.sheetnames
+                        book.close()
+                        raise ValueError(f"Each change needs a valid sheet. Available sheets: {names}")
                     value = item["value"]
                     if isinstance(value, dict):
                         value = value["formula"]
                     elif isinstance(value, str) and value.startswith(("=", "+", "-", "@")):
                         value = "'"+value
-                    book[item["sheet"]][item["cell"]] = value
+                    book[sheet_name][item["cell"]] = value
                 target = self.path(args["target"], write=True)
                 target.parent.mkdir(parents=True, exist_ok=True)
                 book.save(target)

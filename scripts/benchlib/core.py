@@ -56,7 +56,7 @@ def safe_path(root: Path, relative: str) -> Path:
 class Settings:
     root: Path
     live: bool = False
-    max_steps: int = 30
+    max_steps: int = 150
     max_calls: int | None = None
     max_tokens: int | None = None
     timeout: float = 180

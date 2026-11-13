@@ -1,12 +1,12 @@
 .agents/
 .tmp/
 .venv/
+docs/
+!docs/routerai-models-2026-11-12.json
+!docs/benchmark-cases.md
 .env
-
 .env.*
 !.env.example
-.venv/
-.tmp/
 .cache/
 __pycache__/
 *.py[cod]

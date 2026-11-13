@@ -158,3 +158,11 @@ def test_semantic_document_uses_fallback_not_affine_illusion(tmp_path):
                            policy="pseudonymize_affine", vault_dir=tmp_path, semantic_sensitive=True)
     assert guard["semantic_fallback"] and not guard["free_text_forwarded"]
     assert question not in guard["question"]
+
+
+def test_chinese_contact_in_separate_excel_cell(tmp_path):
+    question = '[{"cell":"A1","value":"联系人"},{"cell":"B1","value":"陈合成"}]'
+    guard = prepare_advice("protected", {"question": question}, [],
+                           policy="pseudonymize_affine", vault_dir=tmp_path)
+    assert "陈合成" not in guard["question"]
+    assert restore_advice(guard["question"], tmp_path, guard["vault_id"]) == question

@@ -65,6 +65,7 @@ ENTITY = re.compile(
     r'|(?:ООО|АО|ПАО|ЗАО|ИП)\s+(?:[«"][^»"\n]+[»"]|[А-ЯЁA-Z][\w-]+(?:\s+[А-ЯЁA-Z][\w-]+){0,2})'
     r'|[\u4e00-\u9fff]{2,}(?:有限公司|公司)'
     r'|(?:联系人|姓名|负责人)[:：\s]+[\u4e00-\u9fff]{2,4}'
+    r'|(?<![\u4e00-\u9fff])[陈王李张刘赵黄周吴徐孙胡朱高林何郭马罗梁宋郑谢韩唐冯于董萧程曹袁邓许傅沈曾彭吕苏卢蒋蔡贾丁魏薛叶阎余潘杜戴夏钟汪田任姜范方石姚谭廖邹熊金陆郝孔白崔康毛邱秦江史顾侯邵孟龙万段雷钱汤尹黎易常武乔贺赖龚文][\u4e00-\u9fff]{1,2}(?![\u4e00-\u9fff])'
     r'|(?<!\w)[A-Z][a-z]+\s+[A-Z][a-z]+(?:\s+[A-Z][a-z]+)?'
     r'|(?<!\w)[А-ЯЁ][а-яё-]+\s+[А-ЯЁ][а-яё-]+(?:\s+[А-ЯЁ][а-яё-]+)?'
     r'|\b(?:sk|api)[-_][A-Za-z0-9_-]{8,}\b'
@@ -103,7 +104,7 @@ def decrypt_record(folder, identifier):
 
 
 def protect_question(question: str, folder: Path):
-    identifier = digest({"text": question, "policy": "pseudonymize_affine-v1"})
+    identifier = digest({"text": question, "policy": "pseudonymize_affine-v2"})
     vault_file = folder / f"{identifier}.json"
     if vault_file.exists():
         record = decrypt_record(folder, identifier)
