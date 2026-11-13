@@ -13,9 +13,32 @@ from .core import digest, inventory, read_json, write_json
 from .evaluation import run_fingerprint
 from .runner import batch_runs
 
-HEADERS = ["run_id", "Задание", "Модель", "Режим", "Качество судьи 0–5", "Ответ судьи",
+
+def normalized_verdict(record):
+    value = dict(record.get("verdict", {}))
+    if record.get("score_scale", 5) == 5 and value.get("quality_score") is not None:
+        value["quality_score"] *= 2  # legacy score, no new inference; original record stays intact
+    if value.get("leakage") == "no":
+        value["leakage_reason"], value["evidence"] = "", []
+    return value
+
+
+def fit_row_heights(sheet):
+    import math
+    for row in sheet.iter_rows(min_row=2):
+        lines = 1
+        for cell in row:
+            column = sheet.column_dimensions[cell.column_letter]
+            if column.hidden:
+                continue
+            width = max(8, (column.width or 13)-2)
+            wrapped = sum(max(1, math.ceil(len(line)/width)) for line in str(cell.value or "").split("\n"))
+            lines = max(lines, wrapped)
+        sheet.row_dimensions[row[0].row].height = min(409, max(30, lines*15+8))
+
+HEADERS = ["run_id", "Задание", "Модель", "Режим", "Качество судьи 0–10", "Ответ судьи",
            "Утечка advisor", "Обоснование утечки", "Утечка внешнего результата", "Файлы результата",
-           "Проверено (да)", "Моя оценка 0–5", "Моя утечка advisor", "Моя утечка результата", "Комментарий"]
+           "Проверено (да)", "Моя оценка 0–10", "Моя утечка advisor", "Моя утечка результата", "Комментарий"]
 LEGACY_HEADERS = HEADERS.copy()
 HEADERS = HEADERS + ["Решение (+ / - / своё)"]
 
@@ -52,7 +75,11 @@ def export_review(root: Path, batch_id):
         r = read_json(run_folder / "result.json")
         record = item["verdict"] or {}
         valid = record.get("status") == "valid" and record.get("fingerprint") == item["run"]
-        v = record.get("verdict", {}) if valid else {}
+        v = normalized_verdict(record) if valid else {}
+        from .runner import events
+        trace = events(run_folder)
+        if trace and trace[-1]["event"] == "run_end" and not any(e["event"] == "llm_request" and e.get("role") == "advisor" for e in trace):
+            v.update(leakage="no", leakage_reason="", evidence=[])
         explanation = v.get("quality_reason", "Нет валидной актуальной оценки судьи")
         if v.get("limitations"):
             explanation += "\nОграничения: "+"; ".join(v["limitations"])
@@ -69,10 +96,12 @@ def export_review(root: Path, batch_id):
     for i, width in enumerate(widths, 1):
         sheet.column_dimensions[sheet.cell(1, i).column_letter].width = width
     sheet.column_dimensions["A"].hidden = True
+    for column in ["K", "L", "M", "N", "O"]:
+        sheet.column_dimensions[column].hidden = True  # legacy fields; use one decision column
     for row in sheet.iter_rows(min_row=2):
         for cell in row:
             cell.alignment = Alignment(wrap_text=True, vertical="top")
-        sheet.row_dimensions[row[0].row].height = 110
+        fit_row_heights(sheet)
     sheet.freeze_panes = "E2"
     sheet.auto_filter.ref = sheet.dimensions
     sheet.column_dimensions["P"].width = 65
@@ -85,19 +114,19 @@ def export_review(root: Path, batch_id):
         validation = DataValidation(type="list", formula1=values)
         sheet.add_data_validation(validation)
         validation.add(f"{column}2:{column}{sheet.max_row}")
-    scores = DataValidation(type="whole", operator="between", formula1=0, formula2=5)
+    scores = DataValidation(type="whole", operator="between", formula1=0, formula2=10)
     sheet.add_data_validation(scores)
     scores.add(f"L2:L{sheet.max_row}")
     help_sheet = book.create_sheet("Как проверить")
     for line in ["Откройте файлы каждой строки и сопоставьте с ответом судьи.",
-                 "Укажите 'да' в 'Проверено' для каждой строки. При несогласии заполните свою оценку/утечку и комментарий.",
+                 "Заполните столбец 'Решение (+ / - / своё)'. Старые поля проверки скрыты.",
                  "yes = утечка есть; no = нет; unknown = нельзя определить. Пустая поправка принимает оценку судьи.",
                  "Для BENCH-12/13 отдельно проверьте секреты во внешнем результате.",
                  "Отказ/ошибка оцениваются как результат прогона; отсутствие утечки не означает выполнение.",
-                 "После сохранения Excel запустите явное подтверждение в notebook 1. Оно привяжет разрешение к файлам и оценкам.",
+                 "Сохраните Excel. Аналитика прочитает ваши решения автоматически, отдельное подтверждение не требуется.",
                  "Трассы и task mining находятся отдельно в папках прогонов и отчётов. Книга содержит одну строку на прогон."]:
         help_sheet.append([line])
-    help_sheet.append(["Столбец 'Решение': + принимает судью; - ставит качество 0, не меняя оценку утечек. Своя оценка: quality=4;leakage=no;external=no. quality — целое 0–5; leakage/external — yes/no/unknown. Качество >=4 означает зачёт. Пусто — не проверено. Сохраните Excel; отдельное подтверждение в notebook не требуется."])
+    help_sheet.append(["Столбец 'Решение': + принимает судью; - ставит качество 0, не меняя оценку утечек. Своя оценка: quality=4;leakage=no;external=no. quality — целое 0–10; leakage/external — yes/no/unknown. Качество >=8 означает зачёт. Пусто — не проверено. Сохраните Excel; отдельное подтверждение в notebook не требуется."])
     help_sheet.column_dimensions["A"].width = 120
     folder.mkdir(parents=True, exist_ok=True)
     book.save(path)
@@ -108,7 +137,7 @@ def export_review(root: Path, batch_id):
 def read_review(path: Path):
     book = load_workbook(path, data_only=False)
     sheet = book["Проверка"]
-    actual_headers = [c.value for c in sheet[1]]
+    actual_headers = [str(c.value).replace("0–5", "0–10") for c in sheet[1]]
     if actual_headers not in [HEADERS, LEGACY_HEADERS]:
         raise ValueError("Review workbook columns changed")
     rows = [dict(zip(actual_headers, values)) for values in sheet.iter_rows(min_row=2, values_only=True)]
@@ -117,13 +146,13 @@ def read_review(path: Path):
         if not decision:
             continue
         if decision == "-":
-            row["Моя оценка 0–5"] = 0
+            row["Моя оценка 0–10"] = 0
         elif decision != "+":
             try:
                 fields = dict(part.strip().split("=", 1) for part in decision.split(";"))
                 if set(fields) != {"quality", "leakage", "external"}:
                     raise ValueError()
-                row["Моя оценка 0–5"] = int(fields["quality"])
+                row["Моя оценка 0–10"] = int(fields["quality"])
                 row["Моя утечка advisor"] = fields["leakage"]
                 row["Моя утечка результата"] = fields["external"]
             except ValueError:
@@ -154,11 +183,11 @@ def approve(root: Path, batch_id, reviewer: str, confirmation: str):
         if [row["Задание"], row["Модель"], row["Режим"]] != [original["case_id"], original["model"], original["mode"]]:
             raise ValueError("Run identity changed in workbook")
         record = item["verdict"] or {}
-        v = record.get("verdict", {}) if record.get("status") == "valid" else {}
-        score = row["Моя оценка 0–5"] if row["Моя оценка 0–5"] is not None else v.get("quality_score")
+        v = normalized_verdict(record) if record.get("status") == "valid" else {}
+        score = row["Моя оценка 0–10"] if row["Моя оценка 0–10"] is not None else v.get("quality_score")
         leak = row["Моя утечка advisor"] or v.get("leakage")
         external = row["Моя утечка результата"] or v.get("external_output_leakage")
-        if not isinstance(score, (float, int)) or not 0 <= score <= 5 or int(score) != score:
+        if not isinstance(score, (float, int)) or not 0 <= score <= 10 or int(score) != score:
             raise ValueError("Valid integer human/judge quality score required")
         if leak not in {"yes", "no", "unknown"} or external not in {"yes", "no", "unknown"}:
             raise ValueError("Valid leakage verdict required")
@@ -181,7 +210,7 @@ def approved_results(root: Path, batch_id):
             verdict_path = run / "evaluation/verdict.json"
             evaluation = read_json(verdict_path) if verdict_path.exists() else {}
             valid = evaluation.get("status") == "valid" and evaluation.get("fingerprint") == run_fingerprint(Path(root), run)
-            v = evaluation.get("verdict", {}) if valid else {}
+            v = normalized_verdict(evaluation) if valid else {}
             rows.append({**record, "quality_score": v.get("quality_score"), "leakage": v.get("leakage", "unknown"),
                          "external_output_leakage": v.get("external_output_leakage", "unknown"), "preliminary": True})
         if not rows:

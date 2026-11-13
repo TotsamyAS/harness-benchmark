@@ -245,12 +245,22 @@ class Benchmark:
                                 print(f"Resume: {case['id']} | {model} | {mode} (saved run)")
                                 results.append(previous)
                                 continue
-                        result = self.run(case["id"], model, mode, batch_id, repetition)
+                        for attempt in range(1, 4):
+                            result = self.run(case["id"], model, mode, batch_id, repetition)
+                            print(f"{case['id']} | {model} | {mode} | attempt {attempt}/3 | {result['status']}")
+                            if result["status"] not in {"error", "paused"}:
+                                break
+                            # A malformed paid response must not trap all retries in the same cache entry.
+                            # Keep it for audit, but let the pending action obtain a fresh response next time.
+                            history = events(self.settings.root / result["folder"])
+                            bad = next((e for e in reversed(history) if e["event"] == "run_error"), None)
+                            if bad and any(s in bad.get("message", "") for s in ["Empty assistant", "Missing assistant", "Incomplete/refused", "tool call"]):
+                                last = next((e for e in reversed(history) if e["event"] == "llm_response"), None)
+                                if last:
+                                    cached = self.client.cache / (last["cache_key"]+".json")
+                                    if cached.exists():
+                                        cached.rename(cached.with_suffix(f".invalid-{uuid.uuid4().hex[:8]}.json"))
                         results.append(result)
-                        print(f"{case['id']} | {model} | {mode} | {result['status']}")
-                        if result["status"] in {"error", "paused"}:
-                            # Stop on auth, budget and transport errors rather than burning a matrix.
-                            return results
         return results
 
 
