@@ -55,7 +55,7 @@ class Benchmark:
         self.client = RouterClient(settings, transport)
 
     def configuration(self):
-        return {"max_steps": self.settings.max_steps, "max_tokens": self.settings.max_tokens,
+        return {"routing_protocol":2,"max_steps": self.settings.max_steps, "max_tokens": self.settings.max_tokens,
                 "parameters": self.settings.model_parameters, "advisor": self.settings.advisor_model,
                 "policy": self.settings.guard_policy, "system": SYSTEM, "tools": TOOLS+COVERAGE_TOOLS+[ADVICE_TOOL],
                 "implementation": {p.name: digest(p.read_text(encoding="utf-8"))
@@ -125,6 +125,10 @@ class Benchmark:
                 state["coverage"] = {"units":[],"done":{},"profile":{},"failures":{},"version":1}
                 state["coverage_init_error"] = type(exc).__name__+": "+str(exc)
             state["messages"].append({"role":"user","content":canonical(assignment(state["coverage"]))})
+        profile=state["coverage"]["profile"]
+        if profile.get("assemble_word_translation") or profile.get("assemble_spreadsheet_translation"):
+            conflicting={"translate_docx","edit_cells","write_rows","write_file","create_word","copy_file","create_presentation"}
+            toolset=[t for t in toolset if t["function"]["name"] not in conflicting]
         cache_context = {"case_hash": digest(case), "input_hashes": case["input_hashes"]}
         def persist():
             checkpoint.save(folder, state, blob_dir)
@@ -239,6 +243,9 @@ class Benchmark:
         except Exception as exc:
             state["status"] = "paused" if isinstance(exc, RequestPaused) else "error"
             state["stop_reason"] = getattr(exc,"reason",type(exc).__name__)
+            if state["stop_reason"] == "tool_loop":
+                state["status"]="failed_tool"
+                state["phase"]="done"
             trace.event("run_paused" if isinstance(exc, RequestPaused) else "run_error",
                         error_type=type(exc).__name__, message=str(exc), stop_reason=state["stop_reason"],checkpoint_retained=True)
         finally:

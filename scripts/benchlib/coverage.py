@@ -105,7 +105,7 @@ def assignment(coverage,limit=20):
     return {'total':len(coverage['units']),'processed':len(coverage['done']),
             'remaining':len(todo),'batch':todo[:limit],
             'profile':coverage['profile'],
-            'instruction':'Process every unit in this batch, then call submit_work with one record per ID. Read/view does not count as processing. For spreadsheet translation supply translated text in text; use retained only for proper names/IDs with a reason. For analysis give a source-grounded finding or an explicit not_applicable reason; cite generated output files when applicable. When no units remain, synthesize final deliverables using coverage_results and file tools.'}
+            'instruction':'Process every unit in this batch, then call submit_work with one record per ID. Read/view does not count as processing. For spreadsheet/Word translation supply translated text in text; the harness writes the document. Do NOT call translate_docx, edit_cells or regenerate the document yourself. Use retained only for proper names/IDs with a reason. For analysis give a source-grounded finding or an explicit not_applicable reason; cite generated output files when applicable. When no units remain, synthesize final deliverables using coverage_results and file tools.'}
 
 
 def submit(coverage,records,case,input_dir,output_dir):
